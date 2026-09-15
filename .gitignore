@@ -23,6 +23,9 @@ prompts/*.yaml
 # Models
 models/
 
+#venv
+vienv/
+
 # OS/editor
 .DS_Store
 .vscode/
