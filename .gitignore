@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Secrets — NEVER commit these
+.env
+.azure/
+
+# Data — ignore contents, keep folder structure via .gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/processed/markdown/*
+!data/processed/markdown/.gitkeep
+data/processed/chunks/*
+!data/processed/chunks/.gitkeep
+
+# Prompts — local dev copies only, real version lives in Azure App Config
+prompts/*.yaml
+!prompts/.gitkeep
+
+# Models
+models/
+
+# OS/editor
+.DS_Store
+.vscode/
