@@ -2,6 +2,7 @@
 legal_chunker.py
 
 Structure-aware hierarchical chunker for:
+
     - Bharatiya Nyaya Sanhita, 2023 (BNS)
     - Indian Contract Act, 1872 (ICA)
 
@@ -13,8 +14,9 @@ Output:
     data/processed/chunks/bns_chunks.jsonl
     data/processed/chunks/bns_chunks.json
 
-    data/processed/chunks/indian_contract_act_chunks.jsonl
-    data/processed/chunks/indian_contract_act_chunks.json
+    data/processed/chunks/indian-contract-act_chunks.jsonl
+    data/processed/chunks/indian-contract-act_chunks.json
+
 
 Each chunk contains:
 
@@ -31,11 +33,20 @@ Each chunk contains:
     citation_text
     source_file
 
-The chunker is intentionally conservative:
-    - It does NOT rewrite legal wording.
-    - It does NOT correct OCR.
-    - It does NOT remove legal content.
-    - It only identifies document hierarchy and creates chunks.
+
+Design goals:
+
+    1. Preserve legal wording.
+    2. Preserve parent context.
+    3. Recognize BNS and Contract Act structures.
+    4. Recognize bold Markdown subsection markers.
+    5. Recognize nested legal subdivisions.
+    6. Preserve marginal notes.
+    7. Preserve explanations, exceptions and illustrations.
+    8. Keep semantically related content together.
+    9. Split only when chunks become too large.
+    10. Produce citation-ready evidence objects.
+    11. Produce deterministic, unique citation IDs.
 """
 
 from __future__ import annotations
@@ -43,30 +54,27 @@ from __future__ import annotations
 import argparse
 import json
 import re
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 
 # ============================================================
 # Configuration
 # ============================================================
 
-# Target size is measured approximately in tokens.
-# We avoid depending on a tokenizer at this stage so that the
-# chunker has no external model dependency.
+# Approximate target size.
+#
+# This is deliberately not tied to a specific embedding model
+# tokenizer yet. We can replace this with exact tokenizer
+# counting later if required.
 TARGET_CHUNK_TOKENS = 450
 
-# A chunk can exceed the target slightly when keeping a legal
-# unit together.
+# A logical block can exceed the target slightly.
 MAX_CHUNK_TOKENS = 650
 
-# If a single logical block is larger than this, it is split.
-MAX_LOGICAL_BLOCK_TOKENS = 500
-
-# Approximate token-to-character ratio.
-# Legal English text is roughly 3.5-4.5 chars/token depending
-# on punctuation. This is deliberately conservative.
+# Approximate characters per token for legal English.
 CHARS_PER_TOKEN = 4
 
 
@@ -75,122 +83,212 @@ CHARS_PER_TOKEN = 4
 # ============================================================
 
 @dataclass
-class SectionContext:
-    number: str
-    title: str
-    marginal_note: Optional[str] = None
-
-
-@dataclass
-class ChapterContext:
-    number: str
-    title: str
-
-
-@dataclass
 class LegalBlock:
     """
-    A semantically meaningful piece inside a section.
+    A semantically meaningful unit within a section.
 
     Examples:
-        subsection
-        clause
+
+        provision
         explanation
         exception
         illustration
-        paragraph
     """
 
     text: str
+
     content_type: str = "provision"
+
+    # Examples:
+    #   (1)
+    #   (8)
+    #   (28)
+    #   (28)(h)
     subsection: Optional[str] = None
 
 
 @dataclass
 class Section:
+    """
+    Represents a statutory section or a recognized special block.
+    """
+
     number: str
+
     title: str
+
     chapter_number: Optional[str]
+
     chapter_title: Optional[str]
 
     marginal_note: Optional[str] = None
 
-    blocks: list[LegalBlock] = field(default_factory=list)
+    blocks: list[LegalBlock] = field(
+        default_factory=list
+    )
 
-    # Used for non-statutory/special sections such as:
-    # Preamble, Related Judgements, Schedule.
+    # Used for:
+    #   Preamble
+    #   Related Judgements
+    #   Schedule
     special_type: Optional[str] = None
+
+
+# ============================================================
+# Regex patterns
+# ============================================================
+
+# Example:
+#
+# # Chapter I — PRELIMINARY
+#
+CHAPTER_RE = re.compile(
+    r"^\s*#\s+Chapter\s+"
+    r"([A-Za-z0-9IVXLCDM]+)"
+    r"\s*(?:[-–—:]\s*)?"
+    r"(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+# Supports:
+#
+# ## Section 1
+# ## Section 1 - Short title
+# ## Section 1 — Short title
+# ## Section 19-A. ...
+# ## Section 178A. ...
+#
+SECTION_RE = re.compile(
+    r"^\s*##\s+Section\s+"
+    r"([0-9]+(?:-[A-Za-z]+|[A-Za-z]+)?)"
+    r"\s*(?:[-–—:.]\s*)?"
+    r"(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+# Contract Act special blocks.
+#
+# ## Preamble
+# ## Related Judgements
+# ## Schedule
+#
+SPECIAL_SECTION_RE = re.compile(
+    r"^\s*##\s+"
+    r"(Preamble|Related Judgements|Schedule)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+# BNS:
+#
+# **Marginal note:** Definitions.
+#
+MARGINAL_NOTE_RE = re.compile(
+    r"^\s*\*\*Marginal note:\*\*\s*"
+    r"(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+# Supports BOTH:
+#
+# Explanation:
+# **Explanation:**
+# Exception:
+# **Exception:**
+# Illustration:
+# **Illustration:**
+#
+SPECIAL_MARKER_RE = re.compile(
+    r"^\s*"
+    r"(?:\*\*)?"
+    r"(Explanation|Exception|Illustration)"
+    r"\s*:\s*"
+    r"(?:\*\*)?"
+    r"(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+# IMPORTANT:
+#
+# Your actual Markdown uses:
+#
+# **(1)** ...
+# **(a)** ...
+# **(i)** ...
+#
+# The previous version did not account for **.
+#
+# This regex recognizes:
+#
+# (1)
+# **(1)**
+# (a)
+# **(a)**
+# (i)
+# **(i)**
+#
+SUBDIVISION_RE = re.compile(
+    r"^\s*"
+    r"(?:\*\*)?"
+    r"(\(\d+\)|\([a-z]\)|\([ivxlcdm]+\))"
+    r"(?:\*\*)?"
+    r"\s*(.*)$",
+    re.IGNORECASE,
+)
 
 
 # ============================================================
 # Utility functions
 # ============================================================
 
-def normalize_newlines(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def clean_heading_text(text: str) -> str:
-    """
-    Remove Markdown heading syntax and normalize whitespace.
-
-    Does NOT change legal wording.
-    """
-    text = text.strip()
-
-    # Remove trailing whitespace only.
-    text = re.sub(r"[ \t]+$", "", text)
-
-    return text
-
-
 def approx_tokens(text: str) -> int:
     """
-    Conservative approximate token count.
+    Approximate token count.
 
-    We deliberately avoid loading a tokenizer because:
-        1. Chunking should remain deterministic.
-        2. Embedding model may change later.
-        3. Exact tokenizer is better handled during embedding/indexing
-           experiments.
+    This is only used for chunk-size control.
 
-    This is only used to control chunk size.
+    Later, once the exact Azure OpenAI embedding model is selected,
+    this can optionally be replaced with its tokenizer.
     """
+
     if not text:
         return 0
 
-    return max(1, round(len(text) / CHARS_PER_TOKEN))
+    return max(
+        1,
+        round(len(text) / CHARS_PER_TOKEN),
+    )
 
 
 def slugify(value: str) -> str:
+    """
+    Create a deterministic ID-safe representation.
+    """
+
     value = value.lower().strip()
 
-    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        value,
+    )
 
-    value = re.sub(r"_+", "_", value)
+    value = re.sub(
+        r"_+",
+        "_",
+        value,
+    )
 
     return value.strip("_")
 
 
-def clean_section_title(title: str) -> str:
-    """
-    Preserve the actual legal title while removing only the
-    Markdown/heading delimiter.
-
-    Supports:
-        -
-        –
-        —
-    """
-    title = title.strip()
-
-    # Remove one structural separator after the section number.
-    title = re.sub(r"^\s*[-–—:]\s*", "", title)
-
-    return title.strip()
-
-
 def canonical_act_name(act: str) -> str:
+
     if act == "BNS":
         return "Bharatiya Nyaya Sanhita, 2023"
 
@@ -201,86 +299,146 @@ def canonical_act_name(act: str) -> str:
 
 
 def act_short_name(act: str) -> str:
-    return {
-        "BNS": "BNS",
-        "ICA": "ICA",
-    }.get(act, act)
+
+    if act == "BNS":
+        return "BNS"
+
+    if act == "ICA":
+        return "ICA"
+
+    return act
 
 
 # ============================================================
-# Heading detection
+# Legal subdivision hierarchy
 # ============================================================
 
-# Examples:
-#
-# # Chapter I — PRELIMINARY
-# # Chapter II — ...
-#
-CHAPTER_RE = re.compile(
-    r"^\s*#\s+Chapter\s+([A-Za-z0-9IVXLCDM]+)"
-    r"\s*(?:[-–—:]\s*)?(.*?)\s*$",
-    re.IGNORECASE,
-)
+def marker_level(marker: str) -> str:
+    """
+    Determine the structural level of a legal marker.
+
+    Examples:
+
+        (1)  -> numeric
+        (a)  -> alpha
+        (i)  -> roman
+    """
+
+    value = marker[1:-1].lower()
+
+    if value.isdigit():
+        return "numeric"
+
+    roman_values = {
+        "i",
+        "ii",
+        "iii",
+        "iv",
+        "v",
+        "vi",
+        "vii",
+        "viii",
+        "ix",
+        "x",
+        "xi",
+        "xii",
+        "xiii",
+        "xiv",
+        "xv",
+    }
+
+    if value in roman_values:
+        return "roman"
+
+    return "alpha"
 
 
-# Examples:
-#
-# ## Section 1
-# ## Section 1 — Short title
-# ## Section 1 - Short title
-# ## Section 19-A. ...
-# ## Section 178A. ...
-#
-SECTION_RE = re.compile(
-    r"^\s*##\s+Section\s+"
-    r"([0-9]+(?:-[A-Za-z]+|[A-Za-z]+)?)"
-    r"\s*(?:[-–—:.]\s*)?(.*?)\s*$",
-    re.IGNORECASE,
-)
+def update_subdivision_path(
+    current_path: list[str],
+    marker: str,
+) -> list[str]:
+    """
+    Maintain a legal subdivision path.
 
+    Examples:
 
-# BNS:
-#
-# **Marginal note:** Definitions.
-#
-MARGINAL_NOTE_RE = re.compile(
-    r"^\s*\*\*Marginal note:\*\*\s*(.*?)\s*$",
-    re.IGNORECASE,
-)
+        (1)
+        (1)(a)
+        (16)
+        (16)(i)
+        (28)
+        (28)(a)
 
+    The resulting path is represented as:
 
-# Explanation / Exception / Illustration can appear as:
-#
-# **Explanation:**
-# Explanation:
-# **Exception:**
-# Exception:
-# **Illustration:**
-# Illustration:
-#
-SPECIAL_MARKER_RE = re.compile(
-    r"^\s*\**\s*(Explanation|Exception|Illustration)\s*:\s*\**\s*(.*?)\s*$",
-    re.IGNORECASE,
-)
+        ["(1)"]
+        ["(1)", "(a)"]
+        ["(16)", "(i)"]
+        ["(28)", "(a)"]
+    """
 
+    level = marker_level(marker)
 
-# Examples:
-#
-# (1)
-# (2)
-# (a)
-# (b)
-# (i)
-# (ii)
-#
-SUBSECTION_RE = re.compile(
-    r"^\s*(\([0-9]+\))\s*(.*)$"
-)
+    # --------------------------------------------------------
+    # Numeric
+    # --------------------------------------------------------
 
+    if level == "numeric":
 
-CLAUSE_RE = re.compile(
-    r"^\s*(\([a-z]\))\s*(.*)$"
-)
+        # If a numeric marker follows an alpha/roman marker,
+        # it may be nested.
+        if current_path:
+            last_level = marker_level(
+                current_path[-1]
+            )
+
+            if last_level in {
+                "alpha",
+                "roman",
+            }:
+                return current_path + [marker]
+
+        # Otherwise this is a new top-level numeric subsection.
+        return [marker]
+
+    # --------------------------------------------------------
+    # Alpha
+    # --------------------------------------------------------
+
+    if level == "alpha":
+
+        if current_path:
+
+            last_level = marker_level(
+                current_path[-1]
+            )
+
+            # (1) -> (1)(a)
+            if last_level == "numeric":
+                return current_path + [marker]
+
+            # (a) -> (b)
+            if last_level == "alpha":
+                return current_path[:-1] + [marker]
+
+            # (i) -> (a)
+            if last_level == "roman":
+                return current_path[:-1] + [marker]
+
+        return [marker]
+
+    # --------------------------------------------------------
+    # Roman
+    # --------------------------------------------------------
+
+    if level == "roman":
+
+        if current_path:
+            return current_path + [marker]
+
+        return [marker]
+
+    return [marker]
 
 
 # ============================================================
@@ -289,71 +447,111 @@ CLAUSE_RE = re.compile(
 
 class LegalMarkdownParser:
     """
-    Lightweight structural parser.
+    Lightweight structure-aware parser.
 
-    It is intentionally NOT an AST framework.
+    This is NOT intended to create a general-purpose AST.
 
-    It only extracts enough structure to perform legal-aware
-    chunking while preserving the source content.
+    It extracts only the hierarchy required for legal chunking.
     """
 
-    def __init__(self, act: str):
-        self.act = act
+    def parse(
+        self,
+        markdown: str,
+    ) -> list[Section]:
 
-    def parse(self, markdown: str) -> list[Section]:
-        markdown = normalize_newlines(markdown)
+        lines = markdown.replace(
+            "\r\n",
+            "\n",
+        ).replace(
+            "\r",
+            "\n",
+        ).splitlines()
 
-        lines = markdown.splitlines()
+        sections: list[Section] = []
 
-        chapters: list[ChapterContext] = []
+        current_chapter_number: Optional[str] = None
+        current_chapter_title: Optional[str] = None
 
-        current_chapter: Optional[ChapterContext] = None
         current_section: Optional[Section] = None
 
-        parsed_sections: list[Section] = []
-
-        # Temporary content accumulated inside current section.
         current_blocks: list[LegalBlock] = []
 
-        # Track current subsection so clauses can inherit it.
-        current_subsection: Optional[str] = None
+        # Current legal subdivision.
+        subdivision_path: list[str] = []
+
+        # Current semantic block type.
+        #
+        # Important for:
+        #
+        # **Illustration:**
+        #
+        # paragraph 1
+        #
+        # paragraph 2
+        #
+        # Both paragraphs remain illustrations until another
+        # structural marker appears.
+        current_content_type = "provision"
+
+        # ----------------------------------------------------
+        # Helper: flush current section
+        # ----------------------------------------------------
 
         def flush_section():
+
             nonlocal current_section
             nonlocal current_blocks
-            nonlocal current_subsection
+            nonlocal subdivision_path
+            nonlocal current_content_type
 
-            if current_section is None:
-                return
+            if current_section is not None:
 
-            current_section.blocks = current_blocks
+                current_section.blocks = current_blocks
 
-            parsed_sections.append(current_section)
+                sections.append(
+                    current_section
+                )
 
             current_section = None
-            current_blocks = []
-            current_subsection = None
 
-        def add_text_to_current_block(
+            current_blocks = []
+
+            subdivision_path = []
+
+            current_content_type = "provision"
+
+        # ----------------------------------------------------
+        # Helper: append content
+        # ----------------------------------------------------
+
+        def add_block(
             text: str,
-            content_type: str = "provision",
-            subsection: Optional[str] = None,
+            content_type: str,
+            subsection: Optional[str],
         ):
+
             if not text.strip():
                 return
 
             text = text.rstrip()
 
-            # Merge with the previous block when it is the same
-            # semantic type and same subsection.
+            # Merge adjacent content belonging to the same
+            # semantic/legal subdivision.
             if current_blocks:
+
                 previous = current_blocks[-1]
 
                 if (
-                    previous.content_type == content_type
-                    and previous.subsection == subsection
+                    previous.content_type
+                    == content_type
+                    and previous.subsection
+                    == subsection
                 ):
-                    previous.text += "\n\n" + text
+
+                    previous.text += (
+                        "\n\n" + text
+                    )
+
                     return
 
             current_blocks.append(
@@ -365,238 +563,235 @@ class LegalMarkdownParser:
             )
 
         # ----------------------------------------------------
-        # Main line-by-line parser
+        # Main parser
         # ----------------------------------------------------
 
         for raw_line in lines:
 
             line = raw_line.rstrip()
 
-            # -----------------------------------------------
+            # ================================================
             # Chapter
-            # -----------------------------------------------
+            # ================================================
 
-            chapter_match = CHAPTER_RE.match(line)
+            chapter_match = CHAPTER_RE.match(
+                line
+            )
 
             if chapter_match:
+
                 flush_section()
 
-                chapter_number = chapter_match.group(1).strip()
-                chapter_title = chapter_match.group(2).strip()
+                current_chapter_number = (
+                    chapter_match.group(1).strip()
+                )
 
-                current_chapter = ChapterContext(
-                    number=chapter_number,
-                    title=chapter_title,
+                current_chapter_title = (
+                    chapter_match.group(2).strip()
                 )
 
                 continue
 
-            # -----------------------------------------------
+            # ================================================
             # Section
-            # -----------------------------------------------
+            # ================================================
 
-            section_match = SECTION_RE.match(line)
+            section_match = SECTION_RE.match(
+                line
+            )
 
             if section_match:
+
                 flush_section()
 
-                section_number = section_match.group(1).strip()
-                section_title = clean_section_title(
-                    section_match.group(2)
+                section_number = (
+                    section_match.group(1).strip()
+                )
+
+                section_title = (
+                    section_match.group(2).strip()
                 )
 
                 current_section = Section(
                     number=section_number,
                     title=section_title,
                     chapter_number=(
-                        current_chapter.number
-                        if current_chapter
-                        else None
+                        current_chapter_number
                     ),
                     chapter_title=(
-                        current_chapter.title
-                        if current_chapter
-                        else None
+                        current_chapter_title
                     ),
                 )
 
                 continue
 
-            # -----------------------------------------------
-            # Preamble / Related Judgements / Schedule
-            # -----------------------------------------------
+            # ================================================
+            # Special Contract Act sections
+            # ================================================
 
-            if re.match(
-                r"^\s*##\s+(Preamble|Related Judgements|Schedule)\s*$",
-                line,
-                re.IGNORECASE,
-            ):
+            special_section_match = (
+                SPECIAL_SECTION_RE.match(line)
+            )
+
+            if special_section_match:
+
                 flush_section()
 
-                special_name = re.sub(
-                    r"^\s*##\s+",
-                    "",
-                    line,
-                ).strip()
+                name = (
+                    special_section_match
+                    .group(1)
+                    .strip()
+                )
 
                 current_section = Section(
                     number="",
-                    title=special_name,
+                    title=name,
                     chapter_number=(
-                        current_chapter.number
-                        if current_chapter
-                        else None
+                        current_chapter_number
                     ),
                     chapter_title=(
-                        current_chapter.title
-                        if current_chapter
-                        else None
+                        current_chapter_title
                     ),
-                    special_type=special_name.lower().replace(" ", "_"),
+                    special_type=(
+                        name.lower()
+                        .replace(" ", "_")
+                    ),
                 )
 
                 continue
 
-            # -----------------------------------------------
-            # Marginal note
-            # -----------------------------------------------
+            # ================================================
+            # BNS marginal note
+            # ================================================
 
-            marginal_match = MARGINAL_NOTE_RE.match(line)
+            marginal_match = MARGINAL_NOTE_RE.match(
+                line
+            )
 
-            if marginal_match and current_section:
+            if (
+                marginal_match
+                and current_section is not None
+            ):
 
                 current_section.marginal_note = (
-                    marginal_match.group(1).strip()
+                    marginal_match
+                    .group(1)
+                    .strip()
                 )
 
                 continue
 
-            # -----------------------------------------------
+            # ================================================
             # Explanation / Exception / Illustration
-            # -----------------------------------------------
+            # ================================================
 
-            special_match = SPECIAL_MARKER_RE.match(line)
+            special_match = SPECIAL_MARKER_RE.match(
+                line
+            )
 
-            if special_match and current_section:
+            if (
+                special_match
+                and current_section is not None
+            ):
 
-                marker = special_match.group(1).lower()
-                remainder = special_match.group(2).strip()
+                current_content_type = (
+                    special_match
+                    .group(1)
+                    .lower()
+                )
 
-                content_type = marker
-
-                if remainder:
-                    add_text_to_current_block(
-                        f"{special_match.group(1)}: {remainder}",
-                        content_type=content_type,
-                        subsection=current_subsection,
-                    )
-                else:
-                    # Marker may be followed by content on later lines.
-                    #
-                    # Create a new semantic block with the marker.
-                    add_text_to_current_block(
-                        f"{special_match.group(1)}:",
-                        content_type=content_type,
-                        subsection=current_subsection,
-                    )
-
-                continue
-
-            # -----------------------------------------------
-            # Subsection
-            # -----------------------------------------------
-
-            subsection_match = SUBSECTION_RE.match(line)
-
-            if subsection_match and current_section:
-
-                current_subsection = subsection_match.group(1)
-
-                remainder = subsection_match.group(2).strip()
-
-                if remainder:
-                    add_text_to_current_block(
-                        f"{current_subsection} {remainder}",
-                        content_type="provision",
-                        subsection=current_subsection,
-                    )
-                else:
-                    # Preserve subsection marker even when its text
-                    # appears on subsequent lines.
-                    add_text_to_current_block(
-                        current_subsection,
-                        content_type="provision",
-                        subsection=current_subsection,
-                    )
+                # IMPORTANT:
+                #
+                # Preserve the ORIGINAL Markdown line.
+                #
+                # We recognize **Illustration:** as an
+                # illustration marker, but we do not rewrite
+                # the legal source text.
+                add_block(
+                    text=line.strip(),
+                    content_type=current_content_type,
+                    subsection=(
+                        "".join(subdivision_path)
+                        if subdivision_path
+                        else None
+                    ),
+                )
 
                 continue
 
-            # -----------------------------------------------
-            # Clauses
-            # -----------------------------------------------
+            # ================================================
+            # Subsection / clause / nested subdivision
+            # ================================================
 
-            clause_match = CLAUSE_RE.match(line)
+            subdivision_match = (
+                SUBDIVISION_RE.match(line)
+            )
 
-            if clause_match and current_section:
+            if (
+                subdivision_match
+                and current_section is not None
+            ):
 
-                clause = clause_match.group(1)
-                remainder = clause_match.group(2).strip()
+                marker = (
+                    subdivision_match
+                    .group(1)
+                    .strip()
+                )
 
-                if remainder:
-                    add_text_to_current_block(
-                        f"{clause} {remainder}",
-                        content_type="provision",
-                        subsection=current_subsection,
+                subdivision_path = (
+                    update_subdivision_path(
+                        subdivision_path,
+                        marker,
                     )
-                else:
-                    add_text_to_current_block(
-                        clause,
-                        content_type="provision",
-                        subsection=current_subsection,
-                    )
+                )
+
+                # A new legal subdivision starts a normal
+                # provision block.
+                current_content_type = "provision"
+
+                # Preserve the exact source line.
+                add_block(
+                    text=line.strip(),
+                    content_type="provision",
+                    subsection=(
+                        "".join(subdivision_path)
+                    ),
+                )
 
                 continue
 
-            # -----------------------------------------------
-            # Ordinary content
-            # -----------------------------------------------
+            # ================================================
+            # Ordinary legal text
+            # ================================================
 
-            if current_section:
+            if (
+                current_section is not None
+                and line.strip()
+            ):
 
-                if line.strip():
-                    add_text_to_current_block(
-                        line,
-                        content_type="provision",
-                        subsection=current_subsection,
-                    )
-                else:
-                    # Preserve paragraph separation.
-                    #
-                    # We don't append empty blocks because the final
-                    # renderer controls spacing.
-                    continue
+                add_block(
+                    text=line,
+                    content_type=current_content_type,
+                    subsection=(
+                        "".join(subdivision_path)
+                        if subdivision_path
+                        else None
+                    ),
+                )
 
+        # Flush final section.
         flush_section()
 
-        return parsed_sections
+        return sections
 
 
 # ============================================================
-# Semantic chunking
+# Chunker
 # ============================================================
 
-class HierarchicalChunker:
+class HierarchicalLegalChunker:
     """
-    Converts parsed legal sections into citation-ready chunks.
-
-    Design principles:
-
-    1. Preserve legal hierarchy.
-    2. Preserve parent context.
-    3. Keep semantic blocks together.
-    4. Split only when necessary because of size.
-    5. Never rewrite legal wording.
-    6. Produce deterministic citation IDs.
+    Creates citation-ready legal evidence chunks.
     """
 
     def __init__(
@@ -605,81 +800,59 @@ class HierarchicalChunker:
         target_tokens: int = TARGET_CHUNK_TOKENS,
         max_tokens: int = MAX_CHUNK_TOKENS,
     ):
+
         self.act = act
-        self.target_tokens = target_tokens
-        self.max_tokens = max_tokens
 
-    # --------------------------------------------------------
-    # Citation
-    # --------------------------------------------------------
+        self.target_tokens = (
+            target_tokens
+        )
 
-    def build_citation(
-        self,
-        section_number: str,
-        subsection: Optional[str],
-    ) -> tuple[str, str]:
-
-        short = act_short_name(self.act)
-
-        normalized_section = section_number
-
-        if subsection:
-            subsection_clean = subsection.strip("()")
-
-            citation_id = (
-                f"{short}-{normalized_section}-{subsection_clean}"
-            )
-
-            citation_text = (
-                f"{short} §{normalized_section}"
-                f"{subsection}"
-            )
-
-        else:
-            citation_id = (
-                f"{short}-{normalized_section}"
-            )
-
-            citation_text = (
-                f"{short} §{normalized_section}"
-            )
-
-        return citation_id, citation_text
+        self.max_tokens = (
+            max_tokens
+        )
 
     # --------------------------------------------------------
     # Parent context
     # --------------------------------------------------------
 
-    def build_parent_context(
+    def parent_context(
         self,
         section: Section,
     ) -> str:
 
         lines = [
-            f"Act: {canonical_act_name(self.act)}",
+            f"Act: {canonical_act_name(self.act)}"
         ]
 
         if section.chapter_number:
+
             lines.append(
-                f"Chapter {section.chapter_number}"
-                f" — {section.chapter_title}"
+                f"Chapter "
+                f"{section.chapter_number}"
+                f" — "
+                f"{section.chapter_title}"
             )
 
         if section.number:
+
             lines.append(
-                f"Section {section.number}"
-                f" — {section.title}"
+                f"Section "
+                f"{section.number}"
+                f" — "
+                f"{section.title}"
             )
 
         if section.marginal_note:
+
             lines.append(
-                f"Marginal note: {section.marginal_note}"
+                "Marginal note: "
+                f"{section.marginal_note}"
             )
 
         return "\n".join(lines)
 
     # --------------------------------------------------------
-    # Logical block splitting
+    # Split oversized block
     # --------------------------------------------------------
 
     def split_large_block(
@@ -687,83 +860,102 @@ class HierarchicalChunker:
         block: LegalBlock,
     ) -> list[LegalBlock]:
 
-        if approx_tokens(block.text) <= self.max_tokens:
+        if (
+            approx_tokens(block.text)
+            <= self.max_tokens
+        ):
+
             return [block]
 
-        # First attempt: paragraph-based splitting.
+        # ----------------------------------------------------
+        # First: paragraph boundaries
+        # ----------------------------------------------------
+
         paragraphs = re.split(
             r"\n\s*\n",
             block.text.strip(),
         )
 
-        if len(paragraphs) <= 1:
-            # No paragraph boundaries.
-            # Fall back to sentence-aware splitting.
-            return self.split_text_by_sentences(block)
+        if len(paragraphs) > 1:
 
-        pieces: list[LegalBlock] = []
+            result: list[LegalBlock] = []
 
-        current: list[str] = []
-        current_tokens = 0
+            current_parts: list[str] = []
 
-        for paragraph in paragraphs:
+            current_tokens = 0
 
-            paragraph = paragraph.strip()
+            for paragraph in paragraphs:
 
-            if not paragraph:
-                continue
+                paragraph = paragraph.strip()
 
-            paragraph_tokens = approx_tokens(paragraph)
+                if not paragraph:
+                    continue
 
-            if (
-                current
-                and current_tokens + paragraph_tokens
-                > self.max_tokens
-            ):
-                pieces.append(
+                tokens = approx_tokens(
+                    paragraph
+                )
+
+                if (
+                    current_parts
+                    and current_tokens + tokens
+                    > self.max_tokens
+                ):
+
+                    result.append(
+                        LegalBlock(
+                            text="\n\n".join(
+                                current_parts
+                            ),
+                            content_type=(
+                                block.content_type
+                            ),
+                            subsection=(
+                                block.subsection
+                            ),
+                        )
+                    )
+
+                    current_parts = []
+
+                    current_tokens = 0
+
+                current_parts.append(
+                    paragraph
+                )
+
+                current_tokens += tokens
+
+            if current_parts:
+
+                result.append(
                     LegalBlock(
-                        text="\n\n".join(current),
-                        content_type=block.content_type,
-                        subsection=block.subsection,
+                        text="\n\n".join(
+                            current_parts
+                        ),
+                        content_type=(
+                            block.content_type
+                        ),
+                        subsection=(
+                            block.subsection
+                        ),
                     )
                 )
 
-                current = []
-                current_tokens = 0
+            return result
 
-            current.append(paragraph)
-            current_tokens += paragraph_tokens
+        # ----------------------------------------------------
+        # Second: sentence boundaries
+        # ----------------------------------------------------
 
-        if current:
-            pieces.append(
-                LegalBlock(
-                    text="\n\n".join(current),
-                    content_type=block.content_type,
-                    subsection=block.subsection,
-                )
-            )
-
-        return pieces
-
-    def split_text_by_sentences(
-        self,
-        block: LegalBlock,
-    ) -> list[LegalBlock]:
-
-        text = block.text.strip()
-
-        if approx_tokens(text) <= self.max_tokens:
-            return [block]
-
-        # Conservative sentence boundary.
         sentences = re.split(
             r"(?<=[.!?])\s+(?=[A-Z(])",
-            text,
+            block.text.strip(),
         )
 
-        pieces: list[LegalBlock] = []
+        result: list[LegalBlock] = []
 
-        current: list[str] = []
+        current_parts: list[str] = []
+
         current_tokens = 0
 
         for sentence in sentences:
@@ -773,40 +965,60 @@ class HierarchicalChunker:
             if not sentence:
                 continue
 
-            sentence_tokens = approx_tokens(sentence)
+            tokens = approx_tokens(
+                sentence
+            )
 
             if (
-                current
-                and current_tokens + sentence_tokens
+                current_parts
+                and current_tokens + tokens
                 > self.max_tokens
             ):
-                pieces.append(
+
+                result.append(
                     LegalBlock(
-                        text=" ".join(current),
-                        content_type=block.content_type,
-                        subsection=block.subsection,
+                        text=" ".join(
+                            current_parts
+                        ),
+                        content_type=(
+                            block.content_type
+                        ),
+                        subsection=(
+                            block.subsection
+                        ),
                     )
                 )
 
-                current = []
+                current_parts = []
+
                 current_tokens = 0
 
-            current.append(sentence)
-            current_tokens += sentence_tokens
+            current_parts.append(
+                sentence
+            )
 
-        if current:
-            pieces.append(
+            current_tokens += tokens
+
+        if current_parts:
+
+            result.append(
                 LegalBlock(
-                    text=" ".join(current),
-                    content_type=block.content_type,
-                    subsection=block.subsection,
+                    text=" ".join(
+                        current_parts
+                    ),
+                    content_type=(
+                        block.content_type
+                    ),
+                    subsection=(
+                        block.subsection
+                    ),
                 )
             )
 
-        return pieces
+        return result
 
     # --------------------------------------------------------
-    # Build chunks
+    # Chunk one section
     # --------------------------------------------------------
 
     def chunk_section(
@@ -837,163 +1049,292 @@ class HierarchicalChunker:
             return [
                 {
                     "chunk_id": chunk_id,
-                    "act": canonical_act_name(self.act),
-                    "chapter_number": section.chapter_number,
-                    "chapter_title": section.chapter_title,
+
+                    "act": canonical_act_name(
+                        self.act
+                    ),
+
+                    "chapter_number": (
+                        section.chapter_number
+                    ),
+
+                    "chapter_title": (
+                        section.chapter_title
+                    ),
+
                     "section_number": None,
-                    "section_title": section.title,
+
+                    "section_title": (
+                        section.title
+                    ),
+
                     "subsection": None,
-                    "content_type": section.special_type,
+
+                    "content_type": (
+                        section.special_type
+                    ),
+
                     "content": (
-                        f"Act: {canonical_act_name(self.act)}\n"
-                        f"{section.title}\n\n"
+                        f"Act: "
+                        f"{canonical_act_name(self.act)}"
+                        "\n"
+                        f"{section.title}"
+                        "\n\n"
                         f"{content}"
                     ),
+
                     "citation_id": chunk_id,
+
                     "citation_text": (
                         f"{canonical_act_name(self.act)}, "
                         f"{section.title}"
                     ),
+
                     "source_file": None,
                 }
             ]
 
         # ----------------------------------------------------
-        # Expand oversized blocks
+        # Expand blocks that are too large
         # ----------------------------------------------------
 
         logical_blocks: list[LegalBlock] = []
 
         for block in section.blocks:
+
             logical_blocks.extend(
-                self.split_large_block(block)
+                self.split_large_block(
+                    block
+                )
             )
 
         if not logical_blocks:
             return []
 
         # ----------------------------------------------------
-        # Accumulate blocks into chunks
+        # Build chunks
         # ----------------------------------------------------
 
-        chunks: list[dict] = []
+        chunk_groups: list[list[LegalBlock]] = []
 
-        current_blocks: list[LegalBlock] = []
+        current_group: list[LegalBlock] = []
+
         current_tokens = 0
 
-        def emit_current():
-            nonlocal current_blocks
-            nonlocal current_tokens
+        for block in logical_blocks:
 
-            if not current_blocks:
-                return
-
-            # Determine dominant/first subsection.
-            subsection = None
-
-            for block in current_blocks:
-                if block.subsection:
-                    subsection = block.subsection
-                    break
-
-            citation_id, citation_text = self.build_citation(
-                section.number,
-                subsection,
+            block_tokens = approx_tokens(
+                block.text
             )
 
-            parent_context = self.build_parent_context(
-                section
-            )
+            # Keep semantically coherent blocks together
+            # until the target size is reached.
+            if (
+                current_group
+                and current_tokens + block_tokens
+                > self.target_tokens
+            ):
 
-            body_parts = []
-
-            for block in current_blocks:
-                body_parts.append(
-                    block.text.strip()
+                chunk_groups.append(
+                    current_group
                 )
 
+                current_group = []
+
+                current_tokens = 0
+
+            current_group.append(
+                block
+            )
+
+            current_tokens += block_tokens
+
+        if current_group:
+
+            chunk_groups.append(
+                current_group
+            )
+
+        # ----------------------------------------------------
+        # Convert groups into evidence objects
+        # ----------------------------------------------------
+
+        results: list[dict] = []
+
+        parent = self.parent_context(
+            section
+        )
+
+        base_id = (
+            f"{act_short_name(self.act)}"
+            f"-ch{slugify(section.chapter_number or 'na')}"
+            f"-s{slugify(section.number or section.special_type or 'na')}"
+        )
+
+        for index, group in enumerate(
+            chunk_groups,
+            start=1,
+        ):
+
+            # -----------------------------------------------
+            # Determine subsection metadata
+            # -----------------------------------------------
+
+            subsection_values = sorted(
+                {
+                    block.subsection
+                    for block in group
+                    if block.subsection
+                }
+            )
+
+            if len(subsection_values) == 1:
+
+                subsection = (
+                    subsection_values[0]
+                )
+
+            elif subsection_values:
+
+                # Multiple subdivisions occur in the same
+                # semantic chunk.
+                #
+                # We preserve the range/context as a
+                # comma-separated value rather than
+                # fabricating a single subsection.
+                subsection = ", ".join(
+                    subsection_values
+                )
+
+            else:
+
+                subsection = None
+
+            # -----------------------------------------------
+            # Content type
+            # -----------------------------------------------
+
+            content_types = {
+                block.content_type
+                for block in group
+            }
+
+            if len(content_types) == 1:
+
+                content_type = next(
+                    iter(content_types)
+                )
+
+            else:
+
+                content_type = "mixed"
+
+            # -----------------------------------------------
+            # Content
+            # -----------------------------------------------
+
             body = "\n\n".join(
-                part
-                for part in body_parts
-                if part
+                block.text.strip()
+                for block in group
+                if block.text.strip()
             )
 
             content = (
-                f"{parent_context}\n\n"
+                f"{parent}\n\n"
                 f"{body}"
             )
 
-            # Determine content type.
-            types = {
-                block.content_type
-                for block in current_blocks
-            }
+            # -----------------------------------------------
+            # Citation identity
+            # -----------------------------------------------
 
-            if len(types) == 1:
-                content_type = next(iter(types))
-            else:
-                content_type = "mixed"
-
-            chunk_index = len(chunks) + 1
-
-            # Include chunk index only when a section has multiple
-            # chunks. This makes IDs deterministic and unique.
-            base_chunk_id = (
-                f"{act_short_name(self.act)}-"
-                f"ch{slugify(section.chapter_number or 'na')}-"
-                f"s{slugify(section.number)}"
+            # IMPORTANT:
+            #
+            # citation_id is unique per chunk.
+            #
+            # This is required for reliable citation
+            # enforcement later.
+            citation_id = (
+                f"{base_id}-c{index}"
             )
 
-            if len(logical_blocks) == 1:
-                chunk_id = base_chunk_id
-            else:
-                chunk_id = (
-                    f"{base_chunk_id}-"
-                    f"c{chunk_index}"
+            # Human-readable citation.
+            #
+            # If the entire chunk belongs to one subsection,
+            # include it.
+            #
+            # Otherwise cite the parent section.
+            if (
+                section.number
+                and len(subsection_values) == 1
+            ):
+
+                citation_text = (
+                    f"{act_short_name(self.act)} "
+                    f"§{section.number}"
+                    f"{subsection_values[0]}"
                 )
 
-            chunks.append(
+            elif section.number:
+
+                citation_text = (
+                    f"{act_short_name(self.act)} "
+                    f"§{section.number}"
+                )
+
+            else:
+
+                citation_text = (
+                    f"{canonical_act_name(self.act)}, "
+                    f"{section.title}"
+                )
+
+            # -----------------------------------------------
+            # Final evidence object
+            # -----------------------------------------------
+
+            results.append(
                 {
-                    "chunk_id": chunk_id,
-                    "act": canonical_act_name(self.act),
-                    "chapter_number": section.chapter_number,
-                    "chapter_title": section.chapter_title,
-                    "section_number": section.number,
-                    "section_title": section.title,
+                    "chunk_id": citation_id,
+
+                    "act": canonical_act_name(
+                        self.act
+                    ),
+
+                    "chapter_number": (
+                        section.chapter_number
+                    ),
+
+                    "chapter_title": (
+                        section.chapter_title
+                    ),
+
+                    "section_number": (
+                        section.number or None
+                    ),
+
+                    "section_title": (
+                        section.title
+                    ),
+
                     "subsection": subsection,
+
                     "content_type": content_type,
+
                     "content": content,
+
                     "citation_id": citation_id,
+
                     "citation_text": citation_text,
+
                     "source_file": None,
                 }
             )
 
-            current_blocks = []
-            current_tokens = 0
-
-        for block in logical_blocks:
-
-            block_tokens = approx_tokens(block.text)
-
-            # Never split a semantic block if it fits within
-            # the maximum size.
-            if (
-                current_blocks
-                and current_tokens + block_tokens
-                > self.target_tokens
-            ):
-                emit_current()
-
-            current_blocks.append(block)
-            current_tokens += block_tokens
-
-        emit_current()
-
-        return chunks
+        return results
 
     # --------------------------------------------------------
-    # Whole document
+    # Chunk document
     # --------------------------------------------------------
 
     def chunk_document(
@@ -1006,14 +1347,21 @@ class HierarchicalChunker:
 
         for section in sections:
 
-            section_chunks = self.chunk_section(
-                section
+            section_chunks = (
+                self.chunk_section(
+                    section
+                )
             )
 
             for chunk in section_chunks:
-                chunk["source_file"] = source_file
 
-            all_chunks.extend(section_chunks)
+                chunk["source_file"] = (
+                    source_file
+                )
+
+            all_chunks.extend(
+                section_chunks
+            )
 
         return all_chunks
 
@@ -1042,58 +1390,96 @@ def validate_chunks(
         "source_file",
     }
 
+    # --------------------------------------------------------
+    # Field validation
+    # --------------------------------------------------------
+
     for index, chunk in enumerate(chunks):
 
-        missing = required_fields - set(chunk.keys())
+        missing = (
+            required_fields
+            - set(chunk.keys())
+        )
 
         if missing:
+
             raise ValueError(
-                f"{source_file}: chunk {index} is missing "
-                f"fields: {sorted(missing)}"
+                f"{source_file}: "
+                f"chunk {index} missing fields: "
+                f"{sorted(missing)}"
             )
 
         if not chunk["chunk_id"]:
+
             raise ValueError(
-                f"{source_file}: empty chunk_id "
-                f"at chunk {index}"
+                f"{source_file}: "
+                f"empty chunk_id at "
+                f"chunk {index}"
             )
 
         if not chunk["content"].strip():
+
             raise ValueError(
-                f"{source_file}: empty content "
-                f"for chunk {index}"
+                f"{source_file}: "
+                f"empty content at "
+                f"chunk {index}"
             )
 
         if not chunk["citation_id"]:
+
             raise ValueError(
-                f"{source_file}: empty citation_id "
-                f"for chunk {index}"
+                f"{source_file}: "
+                f"empty citation_id at "
+                f"chunk {index}"
             )
 
         if not chunk["citation_text"]:
+
             raise ValueError(
-                f"{source_file}: empty citation_text "
-                f"for chunk {index}"
+                f"{source_file}: "
+                f"empty citation_text at "
+                f"chunk {index}"
             )
 
-    # Check chunk IDs are unique.
-    ids = [chunk["chunk_id"] for chunk in chunks]
+    # --------------------------------------------------------
+    # Unique chunk IDs
+    # --------------------------------------------------------
 
-    duplicates = {
-        item
-        for item in ids
-        if ids.count(item) > 1
-    }
+    chunk_ids = [
+        chunk["chunk_id"]
+        for chunk in chunks
+    ]
 
-    if duplicates:
+    if len(chunk_ids) != len(
+        set(chunk_ids)
+    ):
+
         raise ValueError(
-            f"{source_file}: duplicate chunk IDs: "
-            f"{sorted(duplicates)}"
+            f"{source_file}: duplicate "
+            f"chunk_id detected."
+        )
+
+    # --------------------------------------------------------
+    # Unique citation IDs
+    # --------------------------------------------------------
+
+    citation_ids = [
+        chunk["citation_id"]
+        for chunk in chunks
+    ]
+
+    if len(citation_ids) != len(
+        set(citation_ids)
+    ):
+
+        raise ValueError(
+            f"{source_file}: duplicate "
+            f"citation_id detected."
         )
 
 
 # ============================================================
-# I/O
+# Output
 # ============================================================
 
 def write_jsonl(
@@ -1110,10 +1496,11 @@ def write_jsonl(
         "w",
         encoding="utf-8",
         newline="\n",
-    ) as f:
+    ) as file:
 
         for chunk in chunks:
-            f.write(
+
+            file.write(
                 json.dumps(
                     chunk,
                     ensure_ascii=False,
@@ -1136,18 +1523,18 @@ def write_json(
         "w",
         encoding="utf-8",
         newline="\n",
-    ) as f:
+    ) as file:
 
         json.dump(
             chunks,
-            f,
+            file,
             ensure_ascii=False,
             indent=2,
         )
 
 
 # ============================================================
-# File processing
+# Processing
 # ============================================================
 
 def process_file(
@@ -1158,24 +1545,30 @@ def process_file(
     max_tokens: int,
 ) -> list[dict]:
 
-    print(f"\nProcessing: {input_path}")
+    print()
+    print(
+        f"Processing: {input_path}"
+    )
 
     markdown = input_path.read_text(
         encoding="utf-8"
     )
 
-    parser = LegalMarkdownParser(
-        act=act
+    # --------------------------------------------------------
+    # Parse
+    # --------------------------------------------------------
+
+    parser = LegalMarkdownParser()
+
+    sections = parser.parse(
+        markdown
     )
 
-    sections = parser.parse(markdown)
+    # --------------------------------------------------------
+    # Chunk
+    # --------------------------------------------------------
 
-    print(
-        f"  Sections/blocks detected: "
-        f"{len(sections)}"
-    )
-
-    chunker = HierarchicalChunker(
+    chunker = HierarchicalLegalChunker(
         act=act,
         target_tokens=target_tokens,
         max_tokens=max_tokens,
@@ -1186,21 +1579,29 @@ def process_file(
         source_file=input_path.name,
     )
 
+    # --------------------------------------------------------
+    # Validate
+    # --------------------------------------------------------
+
     validate_chunks(
-        chunks,
-        input_path.name,
+        chunks=chunks,
+        source_file=input_path.name,
     )
+
+    # --------------------------------------------------------
+    # Output names
+    # --------------------------------------------------------
 
     stem = input_path.stem
 
     jsonl_path = (
-        output_dir /
-        f"{stem}_chunks.jsonl"
+        output_dir
+        / f"{stem}_chunks.jsonl"
     )
 
     json_path = (
-        output_dir /
-        f"{stem}_chunks.json"
+        output_dir
+        / f"{stem}_chunks.json"
     )
 
     write_jsonl(
@@ -1213,8 +1614,57 @@ def process_file(
         json_path,
     )
 
+    # --------------------------------------------------------
+    # Statistics
+    # --------------------------------------------------------
+
+    subsection_count = sum(
+        1
+        for chunk in chunks
+        if chunk["subsection"] is not None
+    )
+
+    content_types = {}
+
+    for chunk in chunks:
+
+        content_type = (
+            chunk["content_type"]
+        )
+
+        content_types[
+            content_type
+        ] = (
+            content_types.get(
+                content_type,
+                0,
+            )
+            + 1
+        )
+
     print(
-        f"  Chunks created: {len(chunks)}"
+        f"  Sections / blocks detected: "
+        f"{len(sections)}"
+    )
+
+    print(
+        f"  Chunks created: "
+        f"{len(chunks)}"
+    )
+
+    print(
+        f"  Chunks with subsection: "
+        f"{subsection_count}"
+    )
+
+    print(
+        f"  Chunks without subsection: "
+        f"{len(chunks) - subsection_count}"
+    )
+
+    print(
+        f"  Content types: "
+        f"{content_types}"
     )
 
     print(
@@ -1229,15 +1679,15 @@ def process_file(
 
 
 # ============================================================
-# CLI
+# Main
 # ============================================================
 
 def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Structure-aware hierarchical chunker "
-            "for Indian legal Markdown."
+            "Structure-aware hierarchical "
+            "legal Markdown chunker."
         )
     )
 
@@ -1247,7 +1697,7 @@ def main():
         default=Path(
             r"D:\Programming\AI_Projects\legal-rag-azure\data\processed\normalized\bns.md"
         ),
-        help="Path to BNS Markdown.",
+        help="Path to normalized BNS Markdown.",
     )
 
     parser.add_argument(
@@ -1256,7 +1706,10 @@ def main():
         default=Path(
             r"D:\Programming\AI_Projects\legal-rag-azure\data\processed\normalized\indian-contract-act.md"
         ),
-        help="Path to Indian Contract Act Markdown.",
+        help=(
+            "Path to normalized Indian Contract "
+            "Act Markdown."
+        ),
     )
 
     parser.add_argument(
@@ -1266,7 +1719,7 @@ def main():
             r"D:\Programming\AI_Projects\legal-rag-azure\data\processed\chunks"
         ),
         help=(
-            "Output directory. "
+            "Chunk output directory. "
             "Default: data/processed/chunks"
         ),
     )
@@ -1276,7 +1729,7 @@ def main():
         type=int,
         default=TARGET_CHUNK_TOKENS,
         help=(
-            f"Target chunk size. "
+            "Approximate target chunk size. "
             f"Default: {TARGET_CHUNK_TOKENS}"
         ),
     )
@@ -1286,28 +1739,39 @@ def main():
         type=int,
         default=MAX_CHUNK_TOKENS,
         help=(
-            f"Maximum approximate chunk size. "
+            "Approximate maximum chunk size. "
             f"Default: {MAX_CHUNK_TOKENS}"
         ),
     )
 
     args = parser.parse_args()
 
+    # --------------------------------------------------------
+    # Validate input files
+    # --------------------------------------------------------
+
     if not args.bns.exists():
+
         raise FileNotFoundError(
-            f"BNS Markdown not found: {args.bns}"
+            f"BNS Markdown not found: "
+            f"{args.bns}"
         )
 
     if not args.contract.exists():
+
         raise FileNotFoundError(
-            f"Contract Act Markdown not found: "
-            f"{args.contract}"
+            f"Indian Contract Act Markdown "
+            f"not found: {args.contract}"
         )
 
     args.output_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    # --------------------------------------------------------
+    # BNS
+    # --------------------------------------------------------
 
     bns_chunks = process_file(
         input_path=args.bns,
@@ -1317,6 +1781,10 @@ def main():
         max_tokens=args.max_tokens,
     )
 
+    # --------------------------------------------------------
+    # Indian Contract Act
+    # --------------------------------------------------------
+
     contract_chunks = process_file(
         input_path=args.contract,
         output_dir=args.output_dir,
@@ -1325,12 +1793,18 @@ def main():
         max_tokens=args.max_tokens,
     )
 
-    print("\n" + "=" * 60)
+    # --------------------------------------------------------
+    # Final statistics
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 60)
     print("CHUNKING COMPLETE")
     print("=" * 60)
 
     print(
-        f"BNS chunks:              {len(bns_chunks)}"
+        f"BNS chunks:              "
+        f"{len(bns_chunks)}"
     )
 
     print(
