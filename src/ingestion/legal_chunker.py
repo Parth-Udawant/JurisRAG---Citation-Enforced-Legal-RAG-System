@@ -6,11 +6,6 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-
-# ============================================================
-# Configuration
-# ============================================================
-
 TARGET_CHUNK_TOKENS = 450
 MAX_CHUNK_TOKENS = 650
 
@@ -34,21 +29,12 @@ DOCUMENTS = [
     },
 ]
 
-
-# ============================================================
-# Markdown / legal-structure patterns
-# ============================================================
-
 CHAPTER_RE = re.compile(
     r"^#\s+Chapter\s+([IVXLCDM]+)\s*[—-]\s*(.+?)\s*$",
     re.IGNORECASE,
 )
 
-# Supports:
-#   ## Section 1 — ...
-#   ## Section 19-A — ...
-#   ## Section 178A. ...
-#   ## Section 174
+
 SECTION_RE = re.compile(
     r"^##\s+Section\s+"
     r"([0-9]+(?:-[A-Za-z]+)?|[0-9]+[A-Za-z]+)"
@@ -66,24 +52,13 @@ MARGINAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Explicit semantic blocks.
+
 TYPE_RE = re.compile(
     r"^\s*\*\*(Explanation|Illustration|Exception)\s*:?\*\*"
     r"(?:\s+(.*))?\s*$",
     re.IGNORECASE,
 )
 
-# Explicit statutory markers.
-#
-# IMPORTANT:
-# We only consider a marker structural when it occurs at the
-# beginning of a Markdown line. We also reject cases where the
-# text immediately following the marker begins with punctuation.
-#
-# This prevents a line such as:
-#   **(3)** , (4) and (5) of section 310...
-#
-# from being incorrectly treated as a new statutory subsection.
 MARKER_RE = re.compile(
     r"^\s*(?:[-*+]\s+)?\*\*\s*"
     r"(\([0-9]+\)|\([a-z]\)|\([ivxlcdm]+\))"
@@ -93,38 +68,17 @@ MARKER_RE = re.compile(
 )
 
 
-# ============================================================
-# Utility functions
-# ============================================================
-
 def approx_tokens(text: str) -> int:
-    """
-    Conservative approximation used only for chunk-size control.
-
-    It is intentionally not tied to a specific embedding tokenizer.
-    Final Azure/OpenAI token counts can differ slightly.
-    """
     return max(1, math.ceil(len(text) / 4))
 
 
 def detect_marker(line: str) -> str | None:
-    """
-    Return an explicit legal marker such as '(1)' or '(a)'.
-
-    Do NOT infer nested paths such as '(24)(a)(3)'.
-    """
     match = MARKER_RE.match(line)
     if not match:
         return None
 
     remainder = (match.group(2) or "").strip()
 
-    # Important OCR/legal-reference guard.
-    # Example:
-    #   **(3)** , (4) and (5) of section 8...
-    #
-    # This is a reference inside another provision, not a new
-    # statutory subdivision.
     if remainder and remainder[0] in ",.;:)":
         return None
 
@@ -144,12 +98,6 @@ def marker_kind(marker: str) -> str:
 
 
 def parse_units(lines: list[str]) -> list[dict]:
-    """
-    Parse chapters, sections and Contract Act special blocks.
-
-    Chapter headings are structural metadata and are NOT included
-    in chunk content.
-    """
     units = []
     current_chapter = None
     current_unit = None
@@ -199,11 +147,6 @@ def parse_units(lines: list[str]) -> list[dict]:
 
 
 def collect_chapter_headers(lines: list[str]) -> list[tuple[str, str]]:
-    """
-    Collect chapter identifiers/titles so obvious OCR/page-header
-    contamination such as 'CHAPTERXX REPEAL AND SAVINGS' can be
-    removed when it has been appended to legal text.
-    """
     headers = []
 
     for line in lines:
@@ -223,15 +166,7 @@ def remove_inline_chapter_headers(
     line: str,
     chapter_headers: list[tuple[str, str]],
 ) -> str:
-    """
-    Remove only chapter-header phrases that exactly correspond
-    to chapter headings present in this source.
-
-    This addresses page-layout/OCR contamination such as:
-        ... legal text. CHAPTERXX REPEAL AND SAVINGS
-
-    It does not perform general OCR correction.
-    """
+    
     cleaned = line
 
     for roman, title in chapter_headers:
@@ -252,9 +187,6 @@ def remove_inline_chapter_headers(
 
 
 def make_context(act: str, unit: dict) -> str:
-    """
-    Parent context is included in every chunk.
-    """
     parts = [f"Act: {act}"]
 
     if unit["chapter"]:
@@ -269,7 +201,6 @@ def make_context(act: str, unit: dict) -> str:
     else:
         parts.append(unit["title"])
 
-    # Marginal note is promoted into the parent context.
     for line in unit["lines"]:
         match = MARGINAL_RE.match(line)
         if match:
@@ -281,45 +212,7 @@ def make_context(act: str, unit: dict) -> str:
     return "\n".join(parts)
 
 
-# ============================================================
-# Semantic block construction
-# ============================================================
-
 def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tuple]:
-    """
-    Convert a section into semantic blocks.
-
-    Returned tuple:
-        (marker, content_type, is_direct_subsection, raw_lines)
-
-    Important design rule:
-    --------------------------------
-    We NEVER construct metadata such as:
-        (24)(a)(3)(b)(25)
-
-    A marker is stored exactly as it appears in the source:
-        (24)
-        (a)
-        (i)
-
-    Nested markers remain in content but are not promoted to
-    section-level subsection metadata.
-
-    The first explicit statutory marker in a section establishes
-    the section's top-level marker stream.
-
-    Examples:
-        BNS §1:
-            (1), (2), ... (6) -> direct
-
-        BNS §4:
-            (a), (b), (c), ... -> direct
-            (1), (2) under (c) -> nested
-
-        BNS §101:
-            (a)-(d) -> direct
-            (a)-(c) under "Provided that" -> nested
-    """
     blocks = []
 
     current_lines = []
@@ -354,17 +247,14 @@ def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tup
             chapter_headers,
         )
 
-        # Structural/non-content lines.
         if not line.strip():
             continue
 
         if line.strip() == "---":
-            # Markdown separator between legal units/pages.
-            # It is not legal content.
             continue
 
         if MARGINAL_RE.match(line):
-            # Already promoted into parent context.
+            
             continue
 
         marker = detect_marker(line)
@@ -376,22 +266,11 @@ def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tup
             kind = marker_kind(marker)
 
             if top_kind is None:
-                # First explicit statutory marker establishes
-                # the section's top-level stream.
                 top_kind = kind
                 nested_region = False
                 direct = True
 
             elif nested_region:
-                # For numeric top-level streams (very common in
-                # BNS definitions), returning to a new numeric
-                # marker closes an explanatory/nested region.
-                #
-                # Example:
-                #   Explanation:
-                #   (a) ...
-                #   (b) ...
-                #   (29) ...
                 if kind == top_kind and top_kind == "numeric":
                     nested_region = False
                     direct = True
@@ -399,8 +278,6 @@ def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tup
                     direct = False
 
             else:
-                # Only markers belonging to the same top-level
-                # stream are promoted to subsection metadata.
                 direct = kind == top_kind
 
             current_lines = [line]
@@ -416,17 +293,12 @@ def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tup
             current_type = type_match.group(1).lower()
             current_direct = False
 
-            # A marker after an Explanation belongs to the
-            # explanation's nested structure rather than the
-            # section-level subsection stream.
             if current_type == "explanation":
                 nested_region = True
 
         else:
             current_lines.append(line)
 
-            # "Provided that" introduces a nested statutory
-            # condition in the normalized sources.
             stripped = re.sub(
                 r"^\s*\*\*|\*\*\s*$",
                 "",
@@ -439,23 +311,13 @@ def build_blocks(unit: dict, chapter_headers: list[tuple[str, str]]) -> list[tup
     flush()
     return blocks
 
-
-# ============================================================
-# Size-aware splitting
-# ============================================================
-
 def split_large_block(
     marker: str | None,
     content_type: str,
     direct: bool,
     text: str,
 ) -> list[tuple]:
-    """
-    Split only when a semantic block is too large.
 
-    Paragraph boundaries are preferred.
-    Sentence fallback is used for unusually large paragraphs.
-    """
     if approx_tokens(text) <= MAX_CHUNK_TOKENS:
         return [(marker, content_type, direct, text)]
 
@@ -494,7 +356,6 @@ def split_large_block(
             )
             continue
 
-        # Sentence fallback.
         sentences = re.split(
             r"(?<=[.!?;])\s+",
             group,
@@ -536,21 +397,12 @@ def split_large_block(
 
     return result
 
-
-# ============================================================
-# Chunking
-# ============================================================
-
 def chunk_document(
     lines: list[str],
     act: str,
     source_file: str,
     prefix: str,
 ) -> tuple[list[dict], list[dict]]:
-    """
-    Return:
-        units, chunks
-    """
     units = parse_units(lines)
     chapter_headers = collect_chapter_headers(lines)
 
@@ -680,14 +532,6 @@ def chunk_document(
                     f"{prefix} §{unit['number']}"
                 )
 
-                # Specific citation only when the entire chunk
-                # is one direct statutory provision.
-                #
-                # This deliberately prevents:
-                #   BNS §101(a)
-                #
-                # when the (a) belongs to a nested Exception or
-                # the chunk contains multiple semantic blocks.
                 if (
                     len(items) == 1
                     and items[0][0] is not None
@@ -727,10 +571,6 @@ def chunk_document(
 
     return units, all_chunks
 
-
-# ============================================================
-# Validation
-# ============================================================
 
 REQUIRED_FIELDS = {
     "chunk_id",
@@ -785,8 +625,6 @@ def validate_chunks(
                 f"{chunk['chunk_id']}: empty content"
             )
 
-        # We never want generated nested paths such as:
-        # (24)(a)(3)(b)
         subsection = chunk["subsection"]
 
         if subsection and ")(" in subsection:
@@ -796,7 +634,6 @@ def validate_chunks(
                 f"{subsection}"
             )
 
-        # Chapter headings must not leak into chunk body.
         if re.search(
             r"^#\s+Chapter\b",
             chunk["content"],
@@ -807,7 +644,6 @@ def validate_chunks(
                 "chapter heading leaked into content"
             )
 
-        # Horizontal separators are structural, not legal text.
         if re.search(
             r"^\s*---\s*$",
             chunk["content"],
@@ -832,7 +668,6 @@ def validate_chunks(
                 f"> {MAX_CHUNK_TOKENS}"
             )
 
-        # A subsection-specific citation must have a subsection.
         if (
             re.search(
                 r"§[0-9]+(?:-[A-Za-z]+)?\([^)]+\)$",
@@ -852,10 +687,6 @@ def validate_chunks(
 
     return errors
 
-
-# ============================================================
-# Output
-# ============================================================
 
 def write_outputs(
     chunks: list[dict],
@@ -897,9 +728,6 @@ def write_outputs(
     return jsonl_path, json_path
 
 
-# ============================================================
-# Main
-# ============================================================
 
 def process_document(document: dict):
 
