@@ -2,11 +2,6 @@ import json
 import math
 from pathlib import Path
 
-
-# ============================================================
-# Configuration
-# ============================================================
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 CHUNK_DIR = PROJECT_ROOT / "data" / "processed" / "chunks"
@@ -26,13 +21,7 @@ DATASETS = {
 EXPECTED_MODEL = "text-embedding-3-large"
 EXPECTED_DIMENSIONS = 1536
 
-
-# ============================================================
-# Helpers
-# ============================================================
-
 def load_jsonl(path: Path) -> list[dict]:
-    """Read a JSONL file without modifying it."""
     records = []
 
     with path.open("r", encoding="utf-8") as f:
@@ -61,7 +50,7 @@ def compare_field(
     errors: list[str],
     chunk_id: str,
 ) -> None:
-    """Verify that a field survived embedding generation unchanged."""
+
     if original.get(field) != generated.get(field):
         errors.append(
             f"{chunk_id}: field '{field}' changed"
@@ -69,7 +58,6 @@ def compare_field(
 
 
 def vector_statistics(vectors: list[list[float]]) -> dict:
-    """Calculate basic sanity statistics across all vector values."""
     values = [
         value
         for vector in vectors
@@ -92,11 +80,6 @@ def vector_statistics(vectors: list[list[float]]) -> dict:
         "nonzero": sum(value != 0 for value in values),
         "total_values": len(values),
     }
-
-
-# ============================================================
-# Dataset audit
-# ============================================================
 
 def audit_dataset(name: str, paths: dict) -> dict:
     print()
@@ -130,10 +113,6 @@ def audit_dataset(name: str, paths: dict) -> dict:
     errors = []
     warnings = []
 
-    # --------------------------------------------------------
-    # 1. Record count
-    # --------------------------------------------------------
-
     if len(original) != len(generated):
         errors.append(
             f"Record count mismatch: "
@@ -141,21 +120,15 @@ def audit_dataset(name: str, paths: dict) -> dict:
             f"{len(generated)} embeddings"
         )
 
-    # --------------------------------------------------------
-    # 2. Chunk IDs
-    # --------------------------------------------------------
-
     original_ids = [record.get("chunk_id") for record in original]
     generated_ids = [record.get("chunk_id") for record in generated]
 
     original_id_set = set(original_ids)
     generated_id_set = set(generated_ids)
 
-    # Duplicate IDs in source
     if len(original_ids) != len(original_id_set):
         errors.append("Duplicate chunk_id(s) in original chunks")
 
-    # Duplicate IDs in embedding output
     if len(generated_ids) != len(generated_id_set):
         errors.append("Duplicate chunk_id(s) in embedding output")
 
@@ -174,18 +147,10 @@ def audit_dataset(name: str, paths: dict) -> dict:
             f"{sorted(extra_ids)[:10]}"
         )
 
-    # --------------------------------------------------------
-    # 3. Ordering
-    # --------------------------------------------------------
-
     if original_ids != generated_ids:
         warnings.append(
             "Embedding record order differs from original chunk order"
         )
-
-    # --------------------------------------------------------
-    # 4. Metadata/content preservation
-    # --------------------------------------------------------
 
     original_by_id = {
         record["chunk_id"]: record
@@ -197,7 +162,6 @@ def audit_dataset(name: str, paths: dict) -> dict:
         for record in generated
     }
 
-    # These are the fields that existed before embedding.
     original_fields = [
         "chunk_id",
         "act",
@@ -229,10 +193,6 @@ def audit_dataset(name: str, paths: dict) -> dict:
             )
 
             metadata_checks += 1
-
-    # --------------------------------------------------------
-    # 5. Embedding metadata
-    # --------------------------------------------------------
 
     all_vectors = []
 
@@ -274,7 +234,6 @@ def audit_dataset(name: str, paths: dict) -> dict:
             )
             continue
 
-        # Validate values.
         for index, value in enumerate(embedding):
             if not isinstance(value, (int, float)):
                 errors.append(
@@ -292,15 +251,7 @@ def audit_dataset(name: str, paths: dict) -> dict:
 
         all_vectors.append(embedding)
 
-    # --------------------------------------------------------
-    # 6. Vector sanity statistics
-    # --------------------------------------------------------
-
     stats = vector_statistics(all_vectors)
-
-    # --------------------------------------------------------
-    # Report
-    # --------------------------------------------------------
 
     print()
     print("Checks")
@@ -436,11 +387,6 @@ def audit_dataset(name: str, paths: dict) -> dict:
         "records": len(generated),
         "errors": 0,
     }
-
-
-# ============================================================
-# Main
-# ============================================================
 
 def main():
     print("Legal RAG — Local Embedding Output Audit")
