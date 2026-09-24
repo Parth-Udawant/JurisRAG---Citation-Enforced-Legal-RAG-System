@@ -17,6 +17,8 @@ data/processed/chunks/*
 !data/processed/chunks/.gitkeep
 data/processed/normalized/*
 !data/processed/normalized/.gitkeep
+data/processed/embeddings/*
+!data/processed/embeddings/.gitkeep
 
 # Prompts — local dev copies only, real version lives in Azure App Config
 prompts/*.yaml
