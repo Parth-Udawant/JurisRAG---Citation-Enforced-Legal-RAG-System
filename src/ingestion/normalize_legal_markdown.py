@@ -6,10 +6,6 @@ from pathlib import Path
 from typing import Optional
 
 
-# ============================================================
-# Data model
-# ============================================================
-
 @dataclass
 class Section:
     number: str
@@ -40,16 +36,6 @@ class Document:
     )
 
 
-# ============================================================
-# Regex patterns
-# ============================================================
-
-# Examples:
-#
-# ## Section 1
-# ## Section 1 - Short title
-# ## Section 19-A. Power to set aside...
-# ## Section 178A. Pledge...
 SECTION_RE = re.compile(
     r"^##\s+Section\s+"
     r"(?P<number>\d+[A-Za-z]?(?:-[A-Za-z]+)?)"
@@ -57,11 +43,6 @@ SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Examples:
-#
-# # Chapter I: PRELIMINARY
-# # Chapter I Of the communication...
-# # Chapter XI Of partnership
 CHAPTER_RE = re.compile(
     r"^#\s+Chapter\s+"
     r"(?P<number>[IVXLCDM0-9]+)"
@@ -70,32 +51,17 @@ CHAPTER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# BNS:
-#
-# **Marginal note:** Short title...
 MARGINAL_NOTE_RE = re.compile(
     r"^\s*\*\*Marginal note:\*\*\s*(?P<text>.*)$",
     re.IGNORECASE,
 )
 
-# Source page provenance in BNS:
-#
-# <!-- source_pages=1,2; section=1 -->
 SOURCE_PAGE_RE = re.compile(
     r"<!--\s*source_pages=(?P<pages>[^;]+)"
     r"(?:;\s*section=(?P<section>[^ ]+))?\s*-->",
     re.IGNORECASE,
 )
 
-# Bold structural markers:
-#
-# **(1)**
-# **(a)**
-# **(i)**
-#
-# Also handles:
-#
-#  **(a)**
 SUBSECTION_RE = re.compile(
     r"^\s*\*\*\s*"
     r"(?P<marker>"
@@ -108,12 +74,6 @@ SUBSECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Explanation:
-#
-# **Explanation** — text
-# **Explanation:** text
-# Explanation : text
-# Explanation 1 : text
 EXPLANATION_RE = re.compile(
     r"^\s*(?:\*\*)?"
     r"Explanation(?:\s+\d+)?"
@@ -123,10 +83,6 @@ EXPLANATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Exception:
-#
-# Exception : text
-# **Exception** — text
 EXCEPTION_RE = re.compile(
     r"^\s*(?:\*\*)?"
     r"Exception(?:\s+\d+)?"
@@ -136,11 +92,6 @@ EXCEPTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Illustration:
-#
-# **Illustration** A...
-# **Illustration**
-# Illustration A...
 ILLUSTRATION_RE = re.compile(
     r"^\s*(?:\*\*)?"
     r"Illustration"
@@ -150,32 +101,18 @@ ILLUSTRATION_RE = re.compile(
 )
 
 
-# ============================================================
-# Utility functions
-# ============================================================
 
 def clean_heading_title(title: str) -> str:
-    """Normalize whitespace without changing legal wording."""
     title = re.sub(r"\s+", " ", title).strip()
 
-    # Remove accidental trailing punctuation/spacing only where
-    # it is clearly heading formatting.
     title = title.rstrip()
 
     return title
 
 
 def normalize_structural_line(line: str) -> str:
-    """
-    Normalize subsection / explanation / exception / illustration
-    markers while preserving the underlying statutory text.
-    """
-
     line = line.strip()
 
-    # -----------------------------------------
-    # Subsections / clauses / subclauses
-    # -----------------------------------------
     match = SUBSECTION_RE.match(line)
 
     if match:
@@ -187,9 +124,6 @@ def normalize_structural_line(line: str) -> str:
 
         return f"**{marker}**"
 
-    # -----------------------------------------
-    # Explanation
-    # -----------------------------------------
     match = EXPLANATION_RE.match(line)
 
     if match:
@@ -200,9 +134,6 @@ def normalize_structural_line(line: str) -> str:
 
         return "**Explanation:**"
 
-    # -----------------------------------------
-    # Exception
-    # -----------------------------------------
     match = EXCEPTION_RE.match(line)
 
     if match:
@@ -213,9 +144,6 @@ def normalize_structural_line(line: str) -> str:
 
         return "**Exception:**"
 
-    # -----------------------------------------
-    # Illustration
-    # -----------------------------------------
     match = ILLUSTRATION_RE.match(line)
 
     if match:
@@ -230,16 +158,11 @@ def normalize_structural_line(line: str) -> str:
 
 
 def clean_content(lines: list[str]) -> list[str]:
-    """
-    Clean structural formatting while preserving the actual
-    legal text.
-    """
 
     result = []
 
     for line in lines:
 
-        # Remove BNS source-page HTML comments.
         if SOURCE_PAGE_RE.match(line.strip()):
             continue
 
@@ -247,7 +170,6 @@ def clean_content(lines: list[str]) -> list[str]:
 
         result.append(normalized)
 
-    # Collapse excessive blank lines.
     cleaned = []
 
     previous_blank = False
@@ -267,7 +189,6 @@ def clean_content(lines: list[str]) -> list[str]:
             previous_blank = False
             cleaned.append(line.rstrip())
 
-    # Remove blank lines at boundaries.
     while cleaned and not cleaned[0].strip():
         cleaned.pop(0)
 
@@ -278,10 +199,6 @@ def clean_content(lines: list[str]) -> list[str]:
 
 
 def parse_source_pages(comment: str) -> list[int]:
-    """
-    Parse:
-        <!-- source_pages=1,2; section=1 -->
-    """
 
     match = SOURCE_PAGE_RE.match(comment.strip())
 
@@ -303,9 +220,6 @@ def parse_source_pages(comment: str) -> list[int]:
     return pages
 
 
-# ============================================================
-# Parser
-# ============================================================
 
 class LegalMarkdownParser:
 
@@ -320,14 +234,9 @@ class LegalMarkdownParser:
             errors="replace"
         )
 
-        # Normalize line endings.
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         lines = text.splitlines()
-
-        # ----------------------------------------------------
-        # Document title
-        # ----------------------------------------------------
 
         title = ""
 
@@ -339,10 +248,6 @@ class LegalMarkdownParser:
 
         document = Document(title=title)
 
-        # ----------------------------------------------------
-        # State
-        # ----------------------------------------------------
-
         current_chapter: Optional[Chapter] = None
         current_section: Optional[Section] = None
 
@@ -350,10 +255,6 @@ class LegalMarkdownParser:
         special_buffer: list[str] = []
 
         pending_source_pages: list[int] = []
-
-        # ----------------------------------------------------
-        # Helpers
-        # ----------------------------------------------------
 
         def flush_special_block():
 
@@ -420,17 +321,9 @@ class LegalMarkdownParser:
 
             current_chapter = None
 
-        # ----------------------------------------------------
-        # Main parsing loop
-        # ----------------------------------------------------
-
         for raw_line in lines:
 
             line = raw_line.rstrip()
-
-            # -----------------------------------------------
-            # Source page metadata
-            # -----------------------------------------------
 
             source_match = SOURCE_PAGE_RE.match(
                 line.strip()
@@ -444,20 +337,11 @@ class LegalMarkdownParser:
 
                 continue
 
-            # -----------------------------------------------
-            # Document title
-            # -----------------------------------------------
-
             if line.startswith("# ") and not line.startswith(
                 "# Chapter"
             ):
 
-                # Already captured as document title.
                 continue
-
-            # -----------------------------------------------
-            # Chapter
-            # -----------------------------------------------
 
             chapter_match = CHAPTER_RE.match(line)
 
@@ -480,10 +364,6 @@ class LegalMarkdownParser:
                 )
 
                 continue
-
-            # -----------------------------------------------
-            # Section
-            # -----------------------------------------------
 
             section_match = SECTION_RE.match(line)
 
@@ -510,10 +390,6 @@ class LegalMarkdownParser:
 
                 continue
 
-            # -----------------------------------------------
-            # Marginal note
-            # -----------------------------------------------
-
             marginal_match = MARGINAL_NOTE_RE.match(line)
 
             if marginal_match and current_section:
@@ -523,17 +399,10 @@ class LegalMarkdownParser:
                 ).strip()
 
                 current_section.marginal_note = marginal
-
-                # If BNS has no title in the section heading,
-                # use marginal note as canonical section title.
                 if not current_section.title:
                     current_section.title = marginal
 
                 continue
-
-            # -----------------------------------------------
-            # Special Contract Act blocks
-            # -----------------------------------------------
 
             stripped = line.strip()
 
@@ -572,18 +441,12 @@ class LegalMarkdownParser:
 
                 continue
 
-            # -----------------------------------------------
-            # If inside a special block
-            # -----------------------------------------------
 
             if current_special_block:
 
                 special_buffer.append(line)
                 continue
 
-            # -----------------------------------------------
-            # Normal content
-            # -----------------------------------------------
 
             if current_section is not None:
 
@@ -597,15 +460,10 @@ class LegalMarkdownParser:
 
             else:
 
-                # Document-level content.
-                # For example Act number or preamble material.
                 if line.strip():
 
                     document.preamble.append(line)
 
-        # ----------------------------------------------------
-        # Flush remaining state
-        # ----------------------------------------------------
 
         flush_special_block()
         flush_chapter()
@@ -613,9 +471,6 @@ class LegalMarkdownParser:
         return document
 
 
-# ============================================================
-# Markdown renderer
-# ============================================================
 
 class MarkdownRenderer:
 
@@ -623,16 +478,9 @@ class MarkdownRenderer:
 
         output = []
 
-        # ----------------------------------------------------
-        # Document title
-        # ----------------------------------------------------
 
         output.append(f"# {document.title}")
         output.append("")
-
-        # ----------------------------------------------------
-        # Act number
-        # ----------------------------------------------------
 
         if document.act_number:
 
@@ -642,10 +490,6 @@ class MarkdownRenderer:
 
             output.append("")
 
-        # ----------------------------------------------------
-        # Document-level content
-        # ----------------------------------------------------
-
         if document.preamble:
 
             output.extend(
@@ -653,13 +497,6 @@ class MarkdownRenderer:
             )
 
             output.append("")
-
-        # ----------------------------------------------------
-        # Special blocks that occurred before chapters
-        # ----------------------------------------------------
-
-        # Preamble / related material is kept as explicit blocks.
-        # These can be rendered before chapters.
 
         for name, content in document.other_blocks:
 
@@ -669,10 +506,6 @@ class MarkdownRenderer:
                 output.append("")
                 output.extend(content)
                 output.append("")
-
-        # ----------------------------------------------------
-        # Chapters
-        # ----------------------------------------------------
 
         for chapter in document.chapters:
 
@@ -690,10 +523,6 @@ class MarkdownRenderer:
                 )
 
                 output.append("")
-
-            # -----------------------------------------------
-            # Sections
-            # -----------------------------------------------
 
             for section in chapter.sections:
 
@@ -714,7 +543,6 @@ class MarkdownRenderer:
 
                 output.append("")
 
-                # Marginal note
                 if section.marginal_note:
 
                     output.append(
@@ -724,18 +552,15 @@ class MarkdownRenderer:
 
                     output.append("")
 
-                # Statutory content
+                
                 output.extend(section.content)
 
                 output.append("")
 
-            # Chapter separator
+            
             output.append("---")
             output.append("")
 
-        # ----------------------------------------------------
-        # Schedule
-        # ----------------------------------------------------
 
         for name, content in document.other_blocks:
 
@@ -746,13 +571,9 @@ class MarkdownRenderer:
                 output.extend(content)
                 output.append("")
 
-        # ----------------------------------------------------
-        # Final cleanup
-        # ----------------------------------------------------
 
         text = "\n".join(output)
 
-        # Collapse >2 blank lines.
         text = re.sub(
             r"\n{3,}",
             "\n\n",
@@ -762,9 +583,6 @@ class MarkdownRenderer:
         return text.strip() + "\n"
 
 
-# ============================================================
-# File normalization
-# ============================================================
 
 def normalize_file(
     input_path: str,
@@ -799,10 +617,6 @@ def normalize_file(
         f"{sum(len(c.sections) for c in document.chapters)}"
     )
 
-
-# ============================================================
-# Main
-# ============================================================
 
 if __name__ == "__main__":
 
