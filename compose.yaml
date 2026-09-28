@@ -1,8 +1,6 @@
 services:
   backend:
-    build:
-      context: ./backend/legal_rag_backend
-      dockerfile: Dockerfile
+    image: ghcr.io/parth-udawant/jurisrag-backend:latest
     env_file:
       - ./.env
       
@@ -17,9 +15,7 @@ services:
       start_period: 10s
 
   frontend:
-    build:
-      context: ./frontend/jurisrag_frontend
-      dockerfile: Dockerfile
+    image: ghcr.io/parth-udawant/jurisrag-frontend:latest
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
     ports:
