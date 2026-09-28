@@ -6,6 +6,7 @@ venv/
 
 # Secrets — NEVER commit these
 .env
+.env.*
 .azure/
 
 # Data — ignore contents, keep folder structure via .gitkeep
