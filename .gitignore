@@ -21,13 +21,6 @@ data/processed/normalized/*
 data/processed/embeddings/*
 !data/processed/embeddings/.gitkeep
 
-# Prompts — local dev copies only, real version lives in Azure App Config
-prompts/*.yaml
-!prompts/.gitkeep
-
-# Models
-models/
-
 # OS/editor
 .DS_Store
 .vscode/
