@@ -24,13 +24,19 @@ export function ChatMessage({ response, onCitation }: { response: ChatResponse; 
   return (
     <div className="assistant-card">
       {response.insufficient_evidence ? (
-        <div className="insufficient-state">
-          <div className="status-icon warning"><WarningIcon size={22} /></div>
-          <div>
-            <div className="status-title">Insufficient evidence</div>
-            <div className="status-text">The supplied legal documents do not contain enough information to provide a grounded answer to this question.</div>
+        <>
+          <div className="answer-status-row">
+            <span className="status-pill insufficient"><WarningIcon size={15} /> Insufficient evidence</span>
           </div>
-        </div>
+          <AnswerContent answer={response.answer} citations={[]} onCitation={onCitation} />
+          <div className="insufficient-state">
+            <div className="status-icon warning"><WarningIcon size={22} /></div>
+            <div>
+              <div className="status-title">Not grounded in the supplied corpus</div>
+              <div className="status-text">The retrieved legal documents do not contain sufficient evidence to answer this question. No source citations are shown because they were not used to support the response.</div>
+            </div>
+          </div>
+        </>
       ) : (
         <>
           <div className="answer-status-row">
@@ -53,4 +59,5 @@ export function ChatMessage({ response, onCitation }: { response: ChatResponse; 
   );
 }
 
+// Backward-compatible alias for callers that use the assistant-specific name.
 export const AssistantMessage = ChatMessage;

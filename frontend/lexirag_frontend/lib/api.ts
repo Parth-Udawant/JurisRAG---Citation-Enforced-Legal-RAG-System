@@ -27,6 +27,7 @@ export async function sendChat(
       const body = await response.json();
       if (typeof body?.detail === "string") detail = body.detail;
     } catch {
+      // Keep the HTTP error above.
     }
     throw new Error(detail);
   }

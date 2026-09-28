@@ -67,11 +67,10 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <div className="ambient ambient-one" /><div className="ambient ambient-two" /><div className="ambient ambient-three" />
       <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
-        <button className="new-chat-button" onClick={newChat}><span className="plus-circle"><PlusIcon size={19} /></span><span>New Chat</span><kbd>⌘ N</kbd></button>
+        <button className="new-chat-button" onClick={newChat} aria-label="New chat" title="New chat"><span className="plus-circle"><PlusIcon size={19} /></span><span>New Chat</span><kbd>⌘ N</kbd></button>
         <div className="sidebar-spacer" />
-        <div className="brand-footer"><strong>LexiRAG</strong><span>v1.0</span><i /> <span>Made in India 🇮🇳</span></div>
+        <div className="brand-footer"><strong>LexiRAG</strong><span>Made in India 🇮🇳</span></div>
       </aside>
       {mobileOpen && <button className="mobile-backdrop" aria-label="Close menu" onClick={() => setMobileOpen(false)} />}
       <section className="chat-panel">
@@ -94,7 +93,7 @@ export default function Home() {
           {turns.length === 0 ? (
             <div className="empty-state">
               <div className="empty-orb"><SparklesIcon size={34} /></div>
-              <h2>Ask about the supplied legal corpus</h2>
+              <h2>Your Goto Legal AI Assistant!</h2>
               <p>Ask about the Bharatiya Nyaya Sanhita, 2023 or the Indian Contract Act, 1872.</p>
               <div className="suggestions">
                 <button onClick={() => setQuestion("What is the punishment for murder under the BNS?")}>Punishment for murder</button>
