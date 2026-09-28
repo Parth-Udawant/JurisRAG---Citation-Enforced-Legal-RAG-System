@@ -49,7 +49,7 @@ export default function Home() {
       setConversationId(prev => prev ?? result.conversation_id ?? newId());
       setTurns(prev => prev.map(t => t.user.id === user.id ? { ...t, response: result } : t));
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Something went wrong while contacting LexiRAG.";
+      const message = e instanceof Error ? e.message : "Something went wrong while contacting JurisRAG.";
       setError(message);
       setTurns(prev => prev.filter(t => t.user.id !== user.id));
       setQuestion(q);
@@ -70,14 +70,14 @@ export default function Home() {
       <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
         <button className="new-chat-button" onClick={newChat} aria-label="New chat" title="New chat"><span className="plus-circle"><PlusIcon size={19} /></span><span>New Chat</span><kbd>⌘ N</kbd></button>
         <div className="sidebar-spacer" />
-        <div className="brand-footer"><strong>LexiRAG</strong><span>Made in India 🇮🇳</span></div>
+        <div className="brand-footer"><strong>JurisRAG</strong><span>Made in India 🇮🇳</span></div>
       </aside>
       {mobileOpen && <button className="mobile-backdrop" aria-label="Close menu" onClick={() => setMobileOpen(false)} />}
       <section className="chat-panel">
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open menu"><MenuIcon size={22} /></button>
           <div className="brand-mark"><SparklesIcon size={30} /></div>
-          <div className="topbar-copy"><h1>Chat with LexiRAG</h1><p>Get accurate, sourced answers from Indian law.</p></div>
+          <div className="topbar-copy"><h1>Chat with JurisRAG</h1><p>Get accurate, sourced answers from Indian law.</p></div>
           <div className="act-select-wrap">
             <span>Source</span>
             <div className="select-shell">
@@ -116,7 +116,7 @@ export default function Home() {
             <textarea value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} placeholder="Ask a follow-up question…" rows={1} disabled={loading} aria-label="Question" />
             <button className="send-button" onClick={submit} disabled={!question.trim() || loading} aria-label="Send question"><SendIcon size={24} /></button>
           </div>
-          <p className="legal-note">LexiRAG provides informational answers grounded in the supplied legal documents and is not a substitute for professional legal advice.</p>
+          <p className="legal-note">JurisRAG provides informational answers grounded in the supplied legal documents and is not a substitute for professional legal advice.</p>
         </div>
       </section>
 

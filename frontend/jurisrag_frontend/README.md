@@ -1,6 +1,6 @@
 # LexiRAG Frontend
 
-Next.js + React + TypeScript frontend for the LexiRAG FastAPI backend.
+Next.js + React + TypeScript frontend for the JurisRAG FastAPI backend.
 
 ## Requirements
 
@@ -45,7 +45,7 @@ The frontend consumes `answer`, `citations`, `sources`, `insufficient_evidence`,
 
 ## Current UX
 
-- LexiRAG dark glassmorphism UI based on the supplied reference
+- JurisRAG dark glassmorphism UI based on the supplied reference
 - New Chat
 - All Acts / BNS / ICA filtering
 - Clickable `[BNS §...]` and `[ICA §...]` citations

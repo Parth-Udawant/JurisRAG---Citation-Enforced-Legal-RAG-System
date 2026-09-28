@@ -3,7 +3,7 @@ import type React from "react";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "LexiRAG",
+  title: "JurisRAG",
   description: "Grounded answers from the supplied Indian legal corpus.",
 };
 
