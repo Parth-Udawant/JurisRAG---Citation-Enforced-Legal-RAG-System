@@ -100,7 +100,7 @@ class RAGService:
                 or "cannot provide a grounded answer" in answer.lower()
             )
 
-        sources = [
+        sources = [] if insufficient_evidence else [
             SourceCard(
                 source_id=str(d.get("citation_id") or d.get("chunk_id")),
                 citation=citation_label(d),
@@ -116,5 +116,8 @@ class RAGService:
             )
             for d in documents
         ]
+
+        if insufficient_evidence:
+            citations = []
 
         return RAGResult(answer, citations, sources, insufficient_evidence, embedding_tokens, gpt_input, gpt_output, False)
