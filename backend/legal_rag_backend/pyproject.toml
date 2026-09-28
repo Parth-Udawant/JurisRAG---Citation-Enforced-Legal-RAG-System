@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legal-rag-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Legal RAG application"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "openai>=1.109,<2",
+  "azure-search-documents>=11.6,<12",
+  "python-dotenv>=1.1,<2",
+  "pydantic>=2.11,<3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
