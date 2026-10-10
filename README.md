@@ -294,10 +294,7 @@ docker compose up -d
 
 ### Areas of Interest
 
-* Generative AI
-* Retrieval-Augmented Generation (RAG)
-* Large Language Models (LLMs)
-* Multimodal AI
+* Generative AI, Agentic AI
+* Retrieval-Augmented Generation (RAG), Large Language Models (LLMs)
 * Computer Vision
 * Natural Language Processing (NLP)
-* Deep Learning
