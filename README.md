@@ -169,9 +169,7 @@ In addition to model-based evaluation metrics, JurisRAG performs deterministic c
 | **Correctness Score of Zero**       |     **0** |
 | **Groundedness Score of Zero**      |     **0** |
 
-### Evaluation Scope
-
-This provides evaluation coverage across **retrieval quality, answer quality, grounding, citation reliability, context utilization, abstention behavior, and hallucination**, rather than relying on a single aggregate score.
+---
 
 # Docker Deployment
 
